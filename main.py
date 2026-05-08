@@ -66,6 +66,53 @@ TRACK_NAMES = {
     41: "zandvoort_reverse",
 }
 
+PIT_LINES = {
+    "baku": {
+        "entry": {
+            "raw": [
+                (266.84, -323.45),
+                (279.68, -328.55),
+                (289.32, -332.38),
+                (298.67, -336.10),
+                (307.45, -339.59),
+                (335.26, -350.48),
+                (349.16, -355.96),
+                (363.81, -361.91),
+                (374.46, -366.40),
+                (386.47, -371.57),
+                (397.33, -376.28),
+                (415.79, -384.24),
+                (423.63, -387.60),
+                (429.85, -390.64),
+                (435.17, -393.61),
+                (441.03, -397.53),
+                (445.75, -401.42),
+                (449.52, -404.60),
+                (454.65, -408.93),
+                (457.72, -411.51),
+                (461.69, -414.47),
+                (467.56, -417.32),
+            ],
+            "simplified": [
+                (266.84, -323.45),
+                (349.16, -355.96),
+                (363.81, -361.91),
+                (423.63, -387.60),
+                (429.85, -390.64),
+                (435.17, -393.61),
+                (441.03, -397.53),
+                (457.72, -411.51),
+                (461.69, -414.47),
+                (467.56, -417.32),
+            ],
+        },
+        "exit": {
+            "raw": [],
+            "simplified": [],
+        },
+    },
+}
+
 if getattr(sys, "frozen", False):
     _base_dir = os.path.dirname(sys.executable)
 else:
@@ -135,6 +182,51 @@ def parse_event_button_status(data):
     return struct.unpack_from("<I", data, HEADER_SIZE + 4)[0]
 
 
+def segment_intersects_aabb(x1, y1, x2, y2, x_min, x_max, y_min, y_max):
+    dx, dy = x2 - x1, y2 - y1
+    t_min, t_max = 0.0, 1.0
+    for p, q in ((-dx, x1 - x_min), (dx, x_max - x1), (-dy, y1 - y_min), (dy, y_max - y1)):
+        if p == 0:
+            if q < 0:
+                return False
+        else:
+            t = q / p
+            if p < 0:
+                if t > t_max:
+                    return False
+                if t > t_min:
+                    t_min = t
+            else:
+                if t < t_min:
+                    return False
+                if t < t_max:
+                    t_max = t
+    return True
+
+
+def rectangle_intersects_polyline(pivot_xz, forward_xz, right_xz, polyline):
+    if len(polyline) < 2:
+        return False
+    px, pz = pivot_xz
+    fx, fz = forward_xz
+    rx, rz = right_xz
+    x_min, x_max = -CAR_EXTENT_REAR, CAR_EXTENT_FORWARD
+    y_min, y_max = -CAR_EXTENT_LEFT, CAR_EXTENT_RIGHT
+    prev_x = (polyline[0][0] - px) * fx + (polyline[0][1] - pz) * fz
+    prev_y = (polyline[0][0] - px) * rx + (polyline[0][1] - pz) * rz
+    for i in range(1, len(polyline)):
+        cur_x = (polyline[i][0] - px) * fx + (polyline[i][1] - pz) * fz
+        cur_y = (polyline[i][0] - px) * rx + (polyline[i][1] - pz) * rz
+        if not ((prev_x < x_min and cur_x < x_min)
+                or (prev_x > x_max and cur_x > x_max)
+                or (prev_y < y_min and cur_y < y_min)
+                or (prev_y > y_max and cur_y > y_max)):
+            if segment_intersects_aabb(prev_x, prev_y, cur_x, cur_y, x_min, x_max, y_min, y_max):
+                return True
+        prev_x, prev_y = cur_x, cur_y
+    return False
+
+
 class Tracker:
     def __init__(self, debug=False):
         self.debug = debug
@@ -146,6 +238,7 @@ class Tracker:
         self.session_time = 0.0
         self.track_id = -1
         self._last_print = 0.0
+        self._last_line_print = 0.0
 
     def update_participants(self, num_active, participants):
         self.num_active = num_active
@@ -224,6 +317,46 @@ class Tracker:
         print(f"  right   = ({rx:>+9.4f}, {ry:>+8.4f}, {rz:>+9.4f})")
         print(f"  yaw     = {yaw_deg:>+7.2f} deg   pitch = {pitch_deg:>+6.2f} deg   roll = {roll_deg:>+6.2f} deg")
         print(f"  gforce  = lat {gl:>+5.2f}   lon {gn:>+5.2f}   vert {gv:>+5.2f}")
+
+    def check_pit_lines(self, interval=1.0):
+        if not self.debug:
+            return
+        idx = self.player_idx
+        if idx is None:
+            return
+        m = self.motion[idx]
+        if m is None:
+            return
+        track = TRACK_NAMES.get(self.track_id)
+        if track not in PIT_LINES:
+            return
+        fx, _, fz = m["forward"]
+        rx, _, rz = m["right"]
+        f_mag = math.hypot(fx, fz)
+        r_mag = math.hypot(rx, rz)
+        if f_mag == 0 or r_mag == 0:
+            return
+        forward_xz = (fx / f_mag, fz / f_mag)
+        right_xz = (rx / r_mag, rz / r_mag)
+        pivot_xz = (m["position"][0], m["position"][2])
+        hits = []
+        for line_name, variants in PIT_LINES[track].items():
+            raw_hit = rectangle_intersects_polyline(pivot_xz, forward_xz, right_xz, variants["raw"])
+            simp_hit = rectangle_intersects_polyline(pivot_xz, forward_xz, right_xz, variants["simplified"])
+            if raw_hit and simp_hit:
+                hits.append((line_name, "both"))
+            elif raw_hit:
+                hits.append((line_name, "raw only"))
+            elif simp_hit:
+                hits.append((line_name, "simplified only"))
+        if not hits:
+            return
+        now = time.monotonic()
+        if now - self._last_line_print < interval:
+            return
+        self._last_line_print = now
+        for name, tag in hits:
+            print(f"[line] car is over the {name} pit line ({tag})")
 
 
 class Logger:
@@ -307,6 +440,7 @@ def main():
                     continue
                 tracker.update_motion(header, parse_motion(data))
                 tracker.maybe_print()
+                tracker.check_pit_lines()
             elif pid == PACKET_ID_PARTICIPANTS:
                 if len(data) < HEADER_SIZE + 1 + NUM_CARS * PARTICIPANT_SIZE:
                     continue
