@@ -14,8 +14,11 @@ DIR_SCALE = 1.0 / 32767.0
 
 PACKET_ID_MOTION = 0
 PACKET_ID_SESSION = 1
+PACKET_ID_LAPDATA = 2
 PACKET_ID_EVENT = 3
 PACKET_ID_PARTICIPANTS = 4
+
+LAP_DATA_SIZE = 57
 
 UDP_ACTION_3 = 0x00400000
 UDP_ACTION_4 = 0x00800000
@@ -183,6 +186,17 @@ def parse_participants(data):
     return num_active, participants
 
 
+def parse_lap_data(data):
+    laps = []
+    for i in range(NUM_CARS):
+        base = HEADER_SIZE + i * LAP_DATA_SIZE
+        if base + 36 > len(data):
+            break
+        cur_lap, pit_status, _ = struct.unpack_from("<BBB", data, base + 33)
+        laps.append({"currentLapNum": cur_lap, "pitStatus": pit_status})
+    return laps
+
+
 def parse_session_track_id(data):
     if len(data) <= SESSION_TRACK_ID_OFFSET:
         return -1
@@ -243,6 +257,25 @@ def rectangle_intersects_polyline(pivot_xz, forward_xz, right_xz, polyline, exte
     return False
 
 
+def segments_intersect(p1, p2, p3, p4):
+    def cross(o, a, b):
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+    d1 = cross(p3, p4, p1)
+    d2 = cross(p3, p4, p2)
+    d3 = cross(p1, p2, p3)
+    d4 = cross(p1, p2, p4)
+    return ((d1 > 0 and d2 < 0) or (d1 < 0 and d2 > 0)) and ((d3 > 0 and d4 < 0) or (d3 < 0 and d4 > 0))
+
+
+def segment_crosses_polyline(p1, p2, polyline):
+    if len(polyline) < 2:
+        return False
+    for i in range(len(polyline) - 1):
+        if segments_intersect(p1, p2, polyline[i], polyline[i + 1]):
+            return True
+    return False
+
+
 def car_pit_line_hits(team_id, track_id, position, forward, right):
     extents = CAR_EXTENTS.get(team_id)
     lines = PIT_LINES.get(track_id)
@@ -269,12 +302,18 @@ class Tracker:
         self.num_active = 0
         self.driver_names = [""] * NUM_CARS
         self.team_ids = [-1] * NUM_CARS
+        self.race_numbers = [0] * NUM_CARS
         self.motion = [None] * NUM_CARS
         self.player_idx = None
         self.frame_id = 0
         self.session_time = 0.0
         self.track_id = -1
         self._last_line_print = 0.0
+        self.last_lap = [-1] * NUM_CARS
+        self.prev_pit_status = [0] * NUM_CARS
+        self.flagged_entry_on_lap = [None] * NUM_CARS
+        self.flagged_exit_on_lap = [None] * NUM_CARS
+        self.prev_position_xz = [None] * NUM_CARS
 
     def update_participants(self, num_active, participants):
         self.num_active = num_active
@@ -282,9 +321,11 @@ class Tracker:
             if i < num_active:
                 self.driver_names[i] = p["name"]
                 self.team_ids[i] = p["teamId"]
+                self.race_numbers[i] = p["raceNumber"]
             else:
                 self.driver_names[i] = ""
                 self.team_ids[i] = -1
+                self.race_numbers[i] = 0
 
     def update_motion(self, header, cars):
         self.player_idx = header["playerCarIndex"]
@@ -346,6 +387,68 @@ class Tracker:
         self._last_line_print = now
         for name in hits:
             print(f"[line] car is over the {name} pit line")
+
+    def update_lap_data(self, laps):
+        if self.debug:
+            return
+        for i, lap in enumerate(laps):
+            if i >= self.num_active:
+                continue
+            cur_lap = lap["currentLapNum"]
+            cur_pit = lap["pitStatus"]
+            last = self.last_lap[i]
+            if last != -1:
+                if cur_lap > last:
+                    if self.flagged_entry_on_lap[i] == last:
+                        self.flagged_entry_on_lap[i] = None
+                    if self.flagged_exit_on_lap[i] == last:
+                        self.flagged_exit_on_lap[i] = None
+                elif cur_lap < last:
+                    self.flagged_entry_on_lap[i] = None
+                    self.flagged_exit_on_lap[i] = None
+                    self.prev_position_xz[i] = None
+            prev_pit = self.prev_pit_status[i]
+            if prev_pit == 0 and cur_pit != 0 and self.flagged_entry_on_lap[i] == cur_lap:
+                name = self.driver_names[i] or f"car{i}"
+                num = self.race_numbers[i]
+                print(f"lap {cur_lap}, car #{num} ({name}): white line violation on pit entry")
+                self.flagged_entry_on_lap[i] = None
+            if prev_pit != 0 and cur_pit == 0 and self.flagged_exit_on_lap[i] == cur_lap:
+                name = self.driver_names[i] or f"car{i}"
+                num = self.race_numbers[i]
+                print(f"lap {cur_lap}, car #{num} ({name}): white line violation on pit exit")
+                self.flagged_exit_on_lap[i] = None
+            self.last_lap[i] = cur_lap
+            self.prev_pit_status[i] = cur_pit
+
+    def check_violations(self):
+        if self.debug:
+            return
+        if not self.num_active:
+            return
+        track_lines = PIT_LINES.get(self.track_id)
+        entry_line = track_lines.get("entry", []) if track_lines else []
+        exit_line = track_lines.get("exit", []) if track_lines else []
+        for i in range(min(self.num_active, NUM_CARS)):
+            m = self.motion[i]
+            if m is None:
+                continue
+            team_id = self.team_ids[i]
+            position = m["position"]
+            curr_xz = (position[0], position[2])
+            prev = self.prev_position_xz[i]
+            seg_ok = prev is not None and math.hypot(curr_xz[0] - prev[0], curr_xz[1] - prev[1]) < 50.0
+            pit = self.prev_pit_status[i]
+            hits = []
+            if team_id >= 0:
+                hits = car_pit_line_hits(team_id, self.track_id, position, m["forward"], m["right"])
+            if entry_line and pit == 0 and self.last_lap[i] != -1:
+                if "entry" in hits or (seg_ok and segment_crosses_polyline(prev, curr_xz, entry_line)):
+                    self.flagged_entry_on_lap[i] = self.last_lap[i]
+            if exit_line and pit != 0 and self.last_lap[i] != -1:
+                if "exit" in hits or (seg_ok and segment_crosses_polyline(prev, curr_xz, exit_line)):
+                    self.flagged_exit_on_lap[i] = self.last_lap[i]
+            self.prev_position_xz[i] = curr_xz
 
 
 class Logger:
@@ -437,6 +540,11 @@ def main():
                     continue
                 tracker.update_motion(header, parse_motion(data))
                 tracker.check_pit_lines()
+                tracker.check_violations()
+            elif pid == PACKET_ID_LAPDATA:
+                if len(data) < HEADER_SIZE + NUM_CARS * LAP_DATA_SIZE:
+                    continue
+                tracker.update_lap_data(parse_lap_data(data))
             elif pid == PACKET_ID_PARTICIPANTS:
                 if len(data) < HEADER_SIZE + 1 + NUM_CARS * PARTICIPANT_SIZE:
                     continue
