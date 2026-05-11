@@ -12,11 +12,6 @@ NUM_CARS = 22
 NAME_LEN = 32
 DIR_SCALE = 1.0 / 32767.0
 
-CAR_EXTENT_FORWARD = 3.30
-CAR_EXTENT_REAR = 2.33
-CAR_EXTENT_LEFT = 1.00
-CAR_EXTENT_RIGHT = 1.00
-
 PACKET_ID_MOTION = 0
 PACKET_ID_SESSION = 1
 PACKET_ID_EVENT = 3
@@ -24,6 +19,7 @@ PACKET_ID_PARTICIPANTS = 4
 
 UDP_ACTION_3 = 0x00400000
 UDP_ACTION_4 = 0x00800000
+UDP_ACTION_5 = 0x01000000
 
 HEADER_FORMAT = "<HBBBBBQfIIBB"
 HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
@@ -36,81 +32,75 @@ PARTICIPANT_SIZE = struct.calcsize(PARTICIPANT_FORMAT)
 
 SESSION_TRACK_ID_OFFSET = HEADER_SIZE + 7
 
-TRACK_NAMES = {
-    0: "melbourne",
-    2: "shanghai",
-    3: "bahrain",
-    4: "catalunya",
-    5: "monaco",
-    6: "montreal",
-    7: "silverstone",
-    9: "hungaroring",
-    10: "spa",
-    11: "monza",
-    12: "singapore",
-    13: "suzuka",
-    14: "abu_dhabi",
-    15: "texas",
-    16: "brazil",
-    17: "austria",
-    19: "mexico",
-    20: "baku",
-    26: "zandvoort",
-    27: "imola",
-    29: "jeddah",
-    30: "miami",
-    31: "las_vegas",
-    32: "losail",
-    39: "silverstone_reverse",
-    40: "austria_reverse",
-    41: "zandvoort_reverse",
+TRACK_IDS = {
+    "Melbourne": 0,
+    "Shanghai": 2,
+    "Bahrain": 3,
+    "Catalunya": 4,
+    "Monaco": 5,
+    "Montreal": 6,
+    "Silverstone": 7,
+    "Hungaroring": 9,
+    "Spa": 10,
+    "Monza": 11,
+    "Singapore": 12,
+    "Suzuka": 13,
+    "Abu Dhabi": 14,
+    "Texas": 15,
+    "Brazil": 16,
+    "Austria": 17,
+    "Mexico": 19,
+    "Baku": 20,
+    "Zandvoort": 26,
+    "Imola": 27,
+    "Jeddah": 29,
+    "Miami": 30,
+    "Las Vegas": 31,
+    "Losail": 32,
+    "Silverstone Reverse": 39,
+    "Austria Reverse": 40,
+    "Zandvoort Reverse": 41,
 }
+TRACK_NAMES = {v: k for k, v in TRACK_IDS.items()}
 
-PIT_LINES = {
-    "baku": {
-        "entry": {
-            "raw": [
-                (266.84, -323.45),
-                (279.68, -328.55),
-                (289.32, -332.38),
-                (298.67, -336.10),
-                (307.45, -339.59),
-                (335.26, -350.48),
-                (349.16, -355.96),
-                (363.81, -361.91),
-                (374.46, -366.40),
-                (386.47, -371.57),
-                (397.33, -376.28),
-                (415.79, -384.24),
-                (423.63, -387.60),
-                (429.85, -390.64),
-                (435.17, -393.61),
-                (441.03, -397.53),
-                (445.75, -401.42),
-                (449.52, -404.60),
-                (454.65, -408.93),
-                (457.72, -411.51),
-                (461.69, -414.47),
-                (467.56, -417.32),
-            ],
-            "simplified": [
-                (266.84, -323.45),
-                (349.16, -355.96),
-                (363.81, -361.91),
-                (423.63, -387.60),
-                (429.85, -390.64),
-                (435.17, -393.61),
-                (441.03, -397.53),
-                (457.72, -411.51),
-                (461.69, -414.47),
-                (467.56, -417.32),
-            ],
-        },
-        "exit": {
-            "raw": [],
-            "simplified": [],
-        },
-    },
+TEAM_IDS = {
+    "F1 2025 Mercedes": 0,
+    "F1 2025 Ferrari": 1,
+    "F1 2025 Red Bull Racing": 2,
+    "F1 2025 Williams": 3,
+    "F1 2025 Aston Martin": 4,
+    "F1 2025 Alpine": 5,
+    "F1 2025 RB": 6,
+    "F1 2025 Haas": 7,
+    "F1 2025 McLaren": 8,
+    "F1 2025 Sauber": 9,
+    "F1 World Car": 41,
+    "F1 Custom Team": 104,
+    "Konnersport": 129,
+    "APXGP 2024": 142,
+    "APXGP 2025": 154,
+    "Konnersport 2024": 155,
+    "F2 2024 Art GP": 158,
+    "F2 2024 Campos": 159,
+    "F2 2024 Rodin Motorsport": 160,
+    "F2 2024 AIX Racing": 161,
+    "F2 2024 DAMS": 162,
+    "F2 2024 Hitech": 163,
+    "F2 2024 MP Motorsport": 164,
+    "F2 2024 Prema": 165,
+    "F2 2024 Trident": 166,
+    "F2 2024 Van Amersfoort Racing": 167,
+    "F2 2024 Invicta": 168,
+    "F1 2024 Mercedes": 185,
+    "F1 2024 Ferrari": 186,
+    "F1 2024 Red Bull Racing": 187,
+    "F1 2024 Williams": 188,
+    "F1 2024 Aston Martin": 189,
+    "F1 2024 Alpine": 190,
+    "F1 2024 RB": 191,
+    "F1 2024 Haas": 192,
+    "F1 2024 McLaren": 193,
+    "F1 2024 Sauber": 194,
 }
 
 if getattr(sys, "frozen", False):
@@ -122,6 +112,30 @@ with open(os.path.join(_base_dir, "settings.json"), "r") as _f:
     _settings = json.load(_f)
 UDP_PORT = int(_settings["udp_port"])
 DEBUG_MODE = bool(_settings.get("debug_mode", False))
+
+CAR_EXTENTS = {}
+for _name, _car in _settings.get("cars", {}).items():
+    if _name not in TEAM_IDS:
+        raise SystemExit(f"settings.json: cars key {_name!r} not in TEAM_IDS")
+    _length = float(_car["length"])
+    _width = float(_car["width"])
+    _off_long = float(_car["offset_longitudinal"])
+    _off_lat = float(_car["offset_lateral"])
+    CAR_EXTENTS[TEAM_IDS[_name]] = (
+        _length / 2 - _off_long,  # forward
+        _length / 2 + _off_long,  # rear
+        _width / 2 + _off_lat,    # left
+        _width / 2 - _off_lat,    # right
+    )
+
+PIT_LINES = {}
+for _name, _lines in _settings.get("pit_lines", {}).items():
+    if _name not in TRACK_IDS:
+        raise SystemExit(f"settings.json: pit_lines key {_name!r} not in TRACK_IDS")
+    PIT_LINES[TRACK_IDS[_name]] = {
+        "entry": [tuple(p) for p in _lines.get("entry", [])],
+        "exit": [tuple(p) for p in _lines.get("exit", [])],
+    }
 
 
 def parse_header(data):
@@ -162,6 +176,7 @@ def parse_participants(data):
         name = f[7].split(b"\x00", 1)[0].decode("utf-8", errors="replace")
         participants.append({
             "aiControlled": f[0],
+            "teamId": f[3],
             "raceNumber": f[5],
             "name": name,
         })
@@ -204,14 +219,15 @@ def segment_intersects_aabb(x1, y1, x2, y2, x_min, x_max, y_min, y_max):
     return True
 
 
-def rectangle_intersects_polyline(pivot_xz, forward_xz, right_xz, polyline):
+def rectangle_intersects_polyline(pivot_xz, forward_xz, right_xz, polyline, extents):
     if len(polyline) < 2:
         return False
     px, pz = pivot_xz
     fx, fz = forward_xz
     rx, rz = right_xz
-    x_min, x_max = -CAR_EXTENT_REAR, CAR_EXTENT_FORWARD
-    y_min, y_max = -CAR_EXTENT_LEFT, CAR_EXTENT_RIGHT
+    forward_ext, rear_ext, left_ext, right_ext = extents
+    x_min, x_max = -rear_ext, forward_ext
+    y_min, y_max = -left_ext, right_ext
     prev_x = (polyline[0][0] - px) * fx + (polyline[0][1] - pz) * fz
     prev_y = (polyline[0][0] - px) * rx + (polyline[0][1] - pz) * rz
     for i in range(1, len(polyline)):
@@ -227,23 +243,48 @@ def rectangle_intersects_polyline(pivot_xz, forward_xz, right_xz, polyline):
     return False
 
 
+def car_pit_line_hits(team_id, track_id, position, forward, right):
+    extents = CAR_EXTENTS.get(team_id)
+    lines = PIT_LINES.get(track_id)
+    if not extents or not lines:
+        return []
+    fx, _, fz = forward
+    rx, _, rz = right
+    f_mag = math.hypot(fx, fz)
+    r_mag = math.hypot(rx, rz)
+    if f_mag == 0 or r_mag == 0:
+        return []
+    forward_xz = (fx / f_mag, fz / f_mag)
+    right_xz = (rx / r_mag, rz / r_mag)
+    pivot_xz = (position[0], position[2])
+    return [
+        name for name, points in lines.items()
+        if points and rectangle_intersects_polyline(pivot_xz, forward_xz, right_xz, points, extents)
+    ]
+
+
 class Tracker:
     def __init__(self, debug=False):
         self.debug = debug
         self.num_active = 0
         self.driver_names = [""] * NUM_CARS
+        self.team_ids = [-1] * NUM_CARS
         self.motion = [None] * NUM_CARS
         self.player_idx = None
         self.frame_id = 0
         self.session_time = 0.0
         self.track_id = -1
-        self._last_print = 0.0
         self._last_line_print = 0.0
 
     def update_participants(self, num_active, participants):
         self.num_active = num_active
         for i, p in enumerate(participants):
-            self.driver_names[i] = p["name"] if i < num_active else ""
+            if i < num_active:
+                self.driver_names[i] = p["name"]
+                self.team_ids[i] = p["teamId"]
+            else:
+                self.driver_names[i] = ""
+                self.team_ids[i] = -1
 
     def update_motion(self, header, cars):
         self.player_idx = header["playerCarIndex"]
@@ -287,37 +328,6 @@ class Tracker:
             "g_force": list(m["gForce"]),
         }
 
-    def maybe_print(self, interval=1.0):
-        if not self.debug:
-            return
-        now = time.monotonic()
-        if now - self._last_print < interval:
-            return
-        self._last_print = now
-        idx = self.player_idx
-        if idx is None:
-            return
-        m = self.motion[idx]
-        if m is None:
-            return
-        name = self.driver_names[idx] or f"car{idx}"
-        x, y, z = m["position"]
-        vx, vy, vz = m["velocity"]
-        fx, fy, fz = m["forward"]
-        rx, ry, rz = m["right"]
-        gl, gn, gv = m["gForce"]
-        yaw_deg = math.degrees(m["yaw"])
-        pitch_deg = math.degrees(m["pitch"])
-        roll_deg = math.degrees(m["roll"])
-        clock = time.strftime("%H:%M:%S")
-        print(f"[{clock}] frame {self.frame_id} t={self.session_time:6.1f}s  {name} (car {idx})")
-        print(f"  pos     = ({x:>+9.2f}, {y:>+8.2f}, {z:>+9.2f}) m")
-        print(f"  vel     = ({vx:>+9.2f}, {vy:>+8.2f}, {vz:>+9.2f}) m/s   speed = {self.speed_kmh(idx):>6.1f} km/h")
-        print(f"  forward = ({fx:>+9.4f}, {fy:>+8.4f}, {fz:>+9.4f})")
-        print(f"  right   = ({rx:>+9.4f}, {ry:>+8.4f}, {rz:>+9.4f})")
-        print(f"  yaw     = {yaw_deg:>+7.2f} deg   pitch = {pitch_deg:>+6.2f} deg   roll = {roll_deg:>+6.2f} deg")
-        print(f"  gforce  = lat {gl:>+5.2f}   lon {gn:>+5.2f}   vert {gv:>+5.2f}")
-
     def check_pit_lines(self, interval=1.0):
         if not self.debug:
             return
@@ -327,36 +337,15 @@ class Tracker:
         m = self.motion[idx]
         if m is None:
             return
-        track = TRACK_NAMES.get(self.track_id)
-        if track not in PIT_LINES:
-            return
-        fx, _, fz = m["forward"]
-        rx, _, rz = m["right"]
-        f_mag = math.hypot(fx, fz)
-        r_mag = math.hypot(rx, rz)
-        if f_mag == 0 or r_mag == 0:
-            return
-        forward_xz = (fx / f_mag, fz / f_mag)
-        right_xz = (rx / r_mag, rz / r_mag)
-        pivot_xz = (m["position"][0], m["position"][2])
-        hits = []
-        for line_name, variants in PIT_LINES[track].items():
-            raw_hit = rectangle_intersects_polyline(pivot_xz, forward_xz, right_xz, variants["raw"])
-            simp_hit = rectangle_intersects_polyline(pivot_xz, forward_xz, right_xz, variants["simplified"])
-            if raw_hit and simp_hit:
-                hits.append((line_name, "both"))
-            elif raw_hit:
-                hits.append((line_name, "raw only"))
-            elif simp_hit:
-                hits.append((line_name, "simplified only"))
+        hits = car_pit_line_hits(self.team_ids[idx], self.track_id, m["position"], m["forward"], m["right"])
         if not hits:
             return
         now = time.monotonic()
         if now - self._last_line_print < interval:
             return
         self._last_line_print = now
-        for name, tag in hits:
-            print(f"[line] car is over the {name} pit line ({tag})")
+        for name in hits:
+            print(f"[line] car is over the {name} pit line")
 
 
 class Logger:
@@ -375,7 +364,7 @@ class Logger:
 
     def _next_path(self, track_id):
         os.makedirs(self.logs_dir, exist_ok=True)
-        slug = TRACK_NAMES.get(track_id, "unknown")
+        slug = TRACK_NAMES.get(track_id, "unknown").lower().replace(" ", "_")
         date = time.strftime("%Y_%m_%d")
         prefix = f"{date}_{slug}_"
         used = set()
@@ -395,12 +384,16 @@ class Logger:
         path = self._next_path(track_id)
         self.current_path = path
         self.current_handle = open(path, "w", buffering=1)
-        print(f"[log] new file: {os.path.basename(path)}")
 
     def append(self, record):
         if self.current_handle is None:
             return
         self.current_handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+    def append_xz(self, x, z):
+        if self.current_handle is None:
+            return
+        self.current_handle.write(f"[{x:.2f}, {z:.2f}],\n")
 
     def handle_buttons(self, button_status, tracker):
         if not self.debug:
@@ -414,10 +407,16 @@ class Logger:
                 self.start_new_file(tracker.track_id)
             record = tracker.player_record()
             if record is None:
-                print("[log] action 3 ignored: no motion data yet")
                 return
             self.append(record)
-            print(f"[log] sample written ({os.path.basename(self.current_path)})")
+        if rising & UDP_ACTION_5:
+            idx = tracker.player_idx
+            if idx is None or tracker.motion[idx] is None:
+                return
+            if self.current_handle is None:
+                self.start_new_file(tracker.track_id)
+            pos = tracker.motion[idx]["position"]
+            self.append_xz(pos[0], pos[2])
 
 
 def main():
@@ -426,8 +425,6 @@ def main():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((UDP_IP, UDP_PORT))
     print(f"Listening for F1 25 telemetry on {UDP_IP}:{UDP_PORT}...")
-    if DEBUG_MODE:
-        print("debug_mode=true: UDP Action 4 = new log file, UDP Action 3 = append sample")
     try:
         while True:
             data, _ = sock.recvfrom(2048)
@@ -439,7 +436,6 @@ def main():
                 if len(data) < HEADER_SIZE + NUM_CARS * CAR_MOTION_SIZE:
                     continue
                 tracker.update_motion(header, parse_motion(data))
-                tracker.maybe_print()
                 tracker.check_pit_lines()
             elif pid == PACKET_ID_PARTICIPANTS:
                 if len(data) < HEADER_SIZE + 1 + NUM_CARS * PARTICIPANT_SIZE:
