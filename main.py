@@ -111,8 +111,18 @@ if getattr(sys, "frozen", False):
 else:
     _base_dir = os.path.dirname(os.path.abspath(__file__))
 
-with open(os.path.join(_base_dir, "settings.json"), "r") as _f:
-    _settings = json.load(_f)
+_settings_path = os.path.join(_base_dir, "settings.json")
+try:
+    with open(_settings_path, "r", encoding="utf-8") as _f:
+        _settings = json.load(_f)
+except FileNotFoundError:
+    raise SystemExit(f"settings.json not found at {_settings_path}")
+except PermissionError:
+    raise SystemExit(f"settings.json: permission denied reading {_settings_path}")
+except json.JSONDecodeError as e:
+    raise SystemExit(f"settings.json: invalid JSON ({e})")
+except OSError as e:
+    raise SystemExit(f"settings.json: read failed ({e})")
 UDP_PORT = int(_settings["udp_port"])
 DEBUG_MODE = bool(_settings.get("debug_mode", False))
 
@@ -316,6 +326,15 @@ class Tracker:
         self.flagged_entry_at = [None] * NUM_CARS
         self.flagged_exit_at = [None] * NUM_CARS
         self.prev_position_xz = [None] * NUM_CARS
+        self.report_logger = None
+
+    def _emit_violation(self, line):
+        print(line)
+        if self.report_logger is not None:
+            try:
+                self.report_logger.write_violation(line)
+            except Exception as e:
+                print(f"[file] report write failed: {e}", file=sys.stderr)
 
     def update_participants(self, num_active, participants):
         self.num_active = num_active
@@ -418,14 +437,14 @@ class Tracker:
                 name = self.driver_names[i] or f"car{i}"
                 num = self.race_numbers[i]
                 ts = self.flagged_entry_at[i]
-                print(f"[{ts}] lap {cur_lap}, car #{num} ({name}): white line violation on pit entry")
+                self._emit_violation(f"[{ts}] lap {cur_lap}, car #{num} ({name}): white line violation on pit entry")
                 self.flagged_entry_on_lap[i] = None
                 self.flagged_entry_at[i] = None
             if prev_pit != 0 and cur_pit == 0 and self.flagged_exit_on_lap[i] == cur_lap:
                 name = self.driver_names[i] or f"car{i}"
                 num = self.race_numbers[i]
                 ts = self.flagged_exit_at[i]
-                print(f"[{ts}] lap {cur_lap}, car #{num} ({name}): white line violation on pit exit")
+                self._emit_violation(f"[{ts}] lap {cur_lap}, car #{num} ({name}): white line violation on pit exit")
                 self.flagged_exit_on_lap[i] = None
                 self.flagged_exit_at[i] = None
             self.last_lap[i] = cur_lap
@@ -475,17 +494,23 @@ class Logger:
 
     def close(self):
         if self.current_handle is not None:
-            self.current_handle.close()
+            try:
+                self.current_handle.close()
+            except OSError:
+                pass
             self.current_handle = None
             self.current_path = None
 
     def _next_path(self, track_id):
-        os.makedirs(self.logs_dir, exist_ok=True)
         slug = TRACK_NAMES.get(track_id, "unknown").lower().replace(" ", "_")
         date = time.strftime("%Y_%m_%d")
         prefix = f"{date}_{slug}_"
         used = set()
-        for fn in os.listdir(self.logs_dir):
+        try:
+            entries = os.listdir(self.logs_dir)
+        except OSError:
+            entries = []
+        for fn in entries:
             if fn.startswith(prefix) and fn.endswith(".txt"):
                 try:
                     used.add(int(fn[len(prefix):-len(".txt")]))
@@ -498,19 +523,33 @@ class Logger:
 
     def start_new_file(self, track_id):
         self.close()
-        path = self._next_path(track_id)
-        self.current_path = path
-        self.current_handle = open(path, "w", buffering=1)
+        try:
+            os.makedirs(self.logs_dir, exist_ok=True)
+            path = self._next_path(track_id)
+            self.current_handle = open(path, "w", buffering=1, encoding="utf-8")
+            self.current_path = path
+        except OSError as e:
+            print(f"[file] log file creation failed: {e}", file=sys.stderr)
+            self.current_handle = None
+            self.current_path = None
 
     def append(self, record):
         if self.current_handle is None:
             return
-        self.current_handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+        try:
+            self.current_handle.write(json.dumps(record, separators=(",", ":")) + "\n")
+        except (OSError, ValueError) as e:
+            print(f"[file] log write failed: {e}", file=sys.stderr)
+            self.close()
 
     def append_xz(self, x, z):
         if self.current_handle is None:
             return
-        self.current_handle.write(f"[{x:.2f}, {z:.2f}],\n")
+        try:
+            self.current_handle.write(f"[{x:.2f}, {z:.2f}],\n")
+        except (OSError, ValueError) as e:
+            print(f"[file] log write failed: {e}", file=sys.stderr)
+            self.close()
 
     def handle_buttons(self, button_status, tracker):
         if not self.debug:
@@ -536,9 +575,76 @@ class Logger:
             self.append_xz(pos[0], pos[2])
 
 
+class ReportLogger:
+    def __init__(self, base_dir, enabled):
+        self.enabled = enabled
+        self.logs_dir = os.path.join(base_dir, "logs")
+        self.current_path = None
+        self.current_handle = None
+        self.current_session_uid = None
+
+    def close(self):
+        if self.current_handle is not None:
+            try:
+                self.current_handle.close()
+            except OSError:
+                pass
+            self.current_handle = None
+            self.current_path = None
+
+    def _next_path(self, track_id):
+        slug = TRACK_NAMES.get(track_id, "unknown").lower().replace(" ", "_")
+        date = time.strftime("%Y_%m_%d")
+        prefix = f"report_{date}_{slug}_"
+        used = set()
+        try:
+            entries = os.listdir(self.logs_dir)
+        except OSError:
+            entries = []
+        for fn in entries:
+            if fn.startswith(prefix) and fn.endswith(".txt"):
+                try:
+                    used.add(int(fn[len(prefix):-len(".txt")]))
+                except ValueError:
+                    pass
+        nn = 1
+        while nn in used:
+            nn += 1
+        return os.path.join(self.logs_dir, f"{prefix}{nn:02d}.txt")
+
+    def ensure_open(self, session_uid, track_id):
+        if not self.enabled:
+            return
+        if self.current_session_uid == session_uid and self.current_handle is not None:
+            return
+        self.close()
+        self.current_session_uid = session_uid
+        try:
+            os.makedirs(self.logs_dir, exist_ok=True)
+            path = self._next_path(track_id)
+            self.current_handle = open(path, "w", buffering=1, encoding="utf-8")
+            self.current_path = path
+        except OSError as e:
+            print(f"[file] report file creation failed: {e}", file=sys.stderr)
+            self.current_handle = None
+            self.current_path = None
+
+    def write_violation(self, line):
+        if self.current_handle is None:
+            return
+        try:
+            self.current_handle.write(line + "\n")
+        except (OSError, ValueError) as e:
+            print(f"[file] report write failed: {e}", file=sys.stderr)
+            self.close()
+            self.current_session_uid = None
+
+
 def main():
     tracker = Tracker(debug=DEBUG_MODE)
     logger = Logger(_base_dir, debug=DEBUG_MODE)
+    report_logger = ReportLogger(_base_dir, enabled=not DEBUG_MODE)
+    tracker.report_logger = report_logger
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.bind((UDP_IP, UDP_PORT))
     print(f"Listening for F1 25 telemetry on {UDP_IP}:{UDP_PORT}...")
@@ -565,13 +671,23 @@ def main():
                 num_active, participants = parse_participants(data)
                 tracker.update_participants(num_active, participants)
             elif pid == PACKET_ID_SESSION:
-                tracker.update_track(parse_session_track_id(data))
+                track_id = parse_session_track_id(data)
+                tracker.update_track(track_id)
+                if track_id >= 0:
+                    report_logger.ensure_open(header["sessionUID"], track_id)
             elif pid == PACKET_ID_EVENT:
                 bs = parse_event_button_status(data)
                 if bs is not None:
                     logger.handle_buttons(bs, tracker)
     finally:
-        logger.close()
+        try:
+            logger.close()
+        except Exception:
+            pass
+        try:
+            report_logger.close()
+        except Exception:
+            pass
 
 
 if __name__ == "__main__":
