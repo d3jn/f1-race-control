@@ -313,6 +313,8 @@ class Tracker:
         self.prev_pit_status = [0] * NUM_CARS
         self.flagged_entry_on_lap = [None] * NUM_CARS
         self.flagged_exit_on_lap = [None] * NUM_CARS
+        self.flagged_entry_at = [None] * NUM_CARS
+        self.flagged_exit_at = [None] * NUM_CARS
         self.prev_position_xz = [None] * NUM_CARS
 
     def update_participants(self, num_active, participants):
@@ -401,23 +403,31 @@ class Tracker:
                 if cur_lap > last:
                     if self.flagged_entry_on_lap[i] == last:
                         self.flagged_entry_on_lap[i] = None
+                        self.flagged_entry_at[i] = None
                     if self.flagged_exit_on_lap[i] == last:
                         self.flagged_exit_on_lap[i] = None
+                        self.flagged_exit_at[i] = None
                 elif cur_lap < last:
                     self.flagged_entry_on_lap[i] = None
                     self.flagged_exit_on_lap[i] = None
+                    self.flagged_entry_at[i] = None
+                    self.flagged_exit_at[i] = None
                     self.prev_position_xz[i] = None
             prev_pit = self.prev_pit_status[i]
             if prev_pit == 0 and cur_pit != 0 and self.flagged_entry_on_lap[i] == cur_lap:
                 name = self.driver_names[i] or f"car{i}"
                 num = self.race_numbers[i]
-                print(f"lap {cur_lap}, car #{num} ({name}): white line violation on pit entry")
+                ts = self.flagged_entry_at[i]
+                print(f"[{ts}] lap {cur_lap}, car #{num} ({name}): white line violation on pit entry")
                 self.flagged_entry_on_lap[i] = None
+                self.flagged_entry_at[i] = None
             if prev_pit != 0 and cur_pit == 0 and self.flagged_exit_on_lap[i] == cur_lap:
                 name = self.driver_names[i] or f"car{i}"
                 num = self.race_numbers[i]
-                print(f"lap {cur_lap}, car #{num} ({name}): white line violation on pit exit")
+                ts = self.flagged_exit_at[i]
+                print(f"[{ts}] lap {cur_lap}, car #{num} ({name}): white line violation on pit exit")
                 self.flagged_exit_on_lap[i] = None
+                self.flagged_exit_at[i] = None
             self.last_lap[i] = cur_lap
             self.prev_pit_status[i] = cur_pit
 
@@ -444,9 +454,13 @@ class Tracker:
                 hits = car_pit_line_hits(team_id, self.track_id, position, m["forward"], m["right"])
             if entry_line and pit == 0 and self.last_lap[i] != -1:
                 if "entry" in hits or (seg_ok and segment_crosses_polyline(prev, curr_xz, entry_line)):
+                    if self.flagged_entry_on_lap[i] != self.last_lap[i]:
+                        self.flagged_entry_at[i] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     self.flagged_entry_on_lap[i] = self.last_lap[i]
             if exit_line and pit != 0 and self.last_lap[i] != -1:
                 if "exit" in hits or (seg_ok and segment_crosses_polyline(prev, curr_xz, exit_line)):
+                    if self.flagged_exit_on_lap[i] != self.last_lap[i]:
+                        self.flagged_exit_at[i] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     self.flagged_exit_on_lap[i] = self.last_lap[i]
             self.prev_position_xz[i] = curr_xz
 
