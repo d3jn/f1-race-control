@@ -306,6 +306,15 @@ def car_pit_line_hits(team_id, track_id, position, forward, right):
     ]
 
 
+# How far (metres) a car is watched after a pit-line crossing before the watch disarms.
+# Entry: distance on track after crossing the entry line; if the car pits within it, fire.
+# Exit: distance on track after rejoining; if the car crosses the exit line within it, fire.
+# The shortest track is ~3.3 km (Monaco), so 1000 m disarms well before the car can loop
+# back to the same pit area and trip the line on the racing line.
+ENTRY_WATCH_MAX_DIST = 1000.0
+EXIT_WATCH_MAX_DIST = 1000.0
+
+
 class Tracker:
     def __init__(self, debug=False):
         self.debug = debug
@@ -321,10 +330,11 @@ class Tracker:
         self._last_line_print = 0.0
         self.last_lap = [-1] * NUM_CARS
         self.prev_pit_status = [0] * NUM_CARS
-        self.flagged_entry_on_lap = [None] * NUM_CARS
-        self.flagged_exit_on_lap = [None] * NUM_CARS
-        self.flagged_entry_at = [None] * NUM_CARS
-        self.flagged_exit_at = [None] * NUM_CARS
+        self.entry_watch = [False] * NUM_CARS
+        self.entry_watch_dist = [0.0] * NUM_CARS
+        self.entry_watch_at = [None] * NUM_CARS
+        self.exit_watch = [False] * NUM_CARS
+        self.exit_watch_dist = [0.0] * NUM_CARS
         self.prev_position_xz = [None] * NUM_CARS
         self.report_logger = None
 
@@ -418,35 +428,31 @@ class Tracker:
             cur_lap = lap["currentLapNum"]
             cur_pit = lap["pitStatus"]
             last = self.last_lap[i]
-            if last != -1:
-                if cur_lap > last:
-                    if self.flagged_entry_on_lap[i] == last:
-                        self.flagged_entry_on_lap[i] = None
-                        self.flagged_entry_at[i] = None
-                    if self.flagged_exit_on_lap[i] == last:
-                        self.flagged_exit_on_lap[i] = None
-                        self.flagged_exit_at[i] = None
-                elif cur_lap < last:
-                    self.flagged_entry_on_lap[i] = None
-                    self.flagged_exit_on_lap[i] = None
-                    self.flagged_entry_at[i] = None
-                    self.flagged_exit_at[i] = None
-                    self.prev_position_xz[i] = None
+            if last != -1 and cur_lap < last:
+                # flashback / lap regression: drop all pending watches for this car
+                self.entry_watch[i] = False
+                self.entry_watch_dist[i] = 0.0
+                self.entry_watch_at[i] = None
+                self.exit_watch[i] = False
+                self.exit_watch_dist[i] = 0.0
+                self.prev_position_xz[i] = None
             prev_pit = self.prev_pit_status[i]
-            if prev_pit == 0 and cur_pit != 0 and self.flagged_entry_on_lap[i] == cur_lap:
+            # pit entry: armed when the car crosses the entry line on track; fires the moment
+            # the car enters the pits while still armed, independent of any lap rollover.
+            if prev_pit == 0 and cur_pit != 0 and self.entry_watch[i]:
                 name = self.driver_names[i] or f"car{i}"
                 num = self.race_numbers[i]
-                ts = self.flagged_entry_at[i]
+                ts = self.entry_watch_at[i]
                 self._emit_violation(f"[{ts}] lap {cur_lap}, car #{num} ({name}): white line violation on pit entry")
-                self.flagged_entry_on_lap[i] = None
-                self.flagged_entry_at[i] = None
-            if prev_pit != 0 and cur_pit == 0 and self.flagged_exit_on_lap[i] == cur_lap:
-                name = self.driver_names[i] or f"car{i}"
-                num = self.race_numbers[i]
-                ts = self.flagged_exit_at[i]
-                self._emit_violation(f"[{ts}] lap {cur_lap}, car #{num} ({name}): white line violation on pit exit")
-                self.flagged_exit_on_lap[i] = None
-                self.flagged_exit_at[i] = None
+                self.entry_watch[i] = False
+                self.entry_watch_dist[i] = 0.0
+                self.entry_watch_at[i] = None
+            # pit exit: arm the watch while the car is in the pit lane / box. It stays armed
+            # for a bounded distance after rejoining (see check_violations), so a crossing of
+            # the exit line fires regardless of current pit status or a lap rollover at the exit.
+            if cur_pit != 0:
+                self.exit_watch[i] = True
+                self.exit_watch_dist[i] = 0.0
             self.last_lap[i] = cur_lap
             self.prev_pit_status[i] = cur_pit
 
@@ -471,16 +477,39 @@ class Tracker:
             hits = []
             if team_id >= 0:
                 hits = car_pit_line_hits(team_id, self.track_id, position, m["forward"], m["right"])
+            # pit entry: arm on the first crossing while on track, then watch for a bounded
+            # distance. If the car enters the pits while armed (see update_lap_data) it fires;
+            # otherwise the watch disarms once the car is clearly past the pit entry.
             if entry_line and pit == 0 and self.last_lap[i] != -1:
-                if "entry" in hits or (seg_ok and segment_crosses_polyline(prev, curr_xz, entry_line)):
-                    if self.flagged_entry_on_lap[i] != self.last_lap[i]:
-                        self.flagged_entry_at[i] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    self.flagged_entry_on_lap[i] = self.last_lap[i]
-            if exit_line and pit != 0 and self.last_lap[i] != -1:
+                if not self.entry_watch[i]:
+                    if "entry" in hits or (seg_ok and segment_crosses_polyline(prev, curr_xz, entry_line)):
+                        self.entry_watch[i] = True
+                        self.entry_watch_dist[i] = 0.0
+                        self.entry_watch_at[i] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                elif seg_ok:
+                    self.entry_watch_dist[i] += math.hypot(curr_xz[0] - prev[0], curr_xz[1] - prev[1])
+                    if self.entry_watch_dist[i] > ENTRY_WATCH_MAX_DIST:
+                        self.entry_watch[i] = False
+                        self.entry_watch_dist[i] = 0.0
+                        self.entry_watch_at[i] = None
+            # pit exit: while armed, a crossing fires immediately. The exit line sits on the
+            # track after the pit lane merges, where pitStatus has usually already returned to
+            # 0, so we cannot gate on pit != 0 the way entry does.
+            if exit_line and self.exit_watch[i] and self.last_lap[i] != -1:
                 if "exit" in hits or (seg_ok and segment_crosses_polyline(prev, curr_xz, exit_line)):
-                    if self.flagged_exit_on_lap[i] != self.last_lap[i]:
-                        self.flagged_exit_at[i] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    self.flagged_exit_on_lap[i] = self.last_lap[i]
+                    name = self.driver_names[i] or f"car{i}"
+                    num = self.race_numbers[i]
+                    ts = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    self._emit_violation(f"[{ts}] lap {self.last_lap[i]}, car #{num} ({name}): white line violation on pit exit")
+                    self.exit_watch[i] = False
+                    self.exit_watch_dist[i] = 0.0
+                elif pit == 0 and seg_ok:
+                    # car has rejoined without crossing; stop watching once it is clearly
+                    # clear of the exit so the racing line on later laps can't trip the line.
+                    self.exit_watch_dist[i] += math.hypot(curr_xz[0] - prev[0], curr_xz[1] - prev[1])
+                    if self.exit_watch_dist[i] > EXIT_WATCH_MAX_DIST:
+                        self.exit_watch[i] = False
+                        self.exit_watch_dist[i] = 0.0
             self.prev_position_xz[i] = curr_xz
 
 
